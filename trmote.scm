@@ -7,6 +7,8 @@
   (only chicken.irregex
         irregex-match?
         sre->irregex)
+  (only chicken.pretty-print
+        pp)
   (only chicken.process-context
         command-line-arguments
         program-name)
@@ -32,7 +34,8 @@
         *port*
         *session-id*
         *url*
-        *username*))
+        *username*
+        torrent-get))
 
 (defstruct options actions errors help torrent)
 
@@ -84,6 +87,16 @@
         (else (let ((res (id-int str))) `(,(not (not res)) . ,res))))
       '(#f . #f)))
 
+(define (!f? x f) (if x (f x) x))
+
+(define (show-results results show)
+  (let ((results (vector->list results)))
+    (let ((arguments (!f? (assoc "arguments" results) (compose vector->list cdr)))
+          (result (!f? (assoc "result" results) cdr)))
+      (if (and result (string=? result "success"))
+          (show arguments)
+          (print "The server replied with: " result)))))
+
 (define (errors-show errors) (for-each force errors) (exit (length errors)))
 (define (options-add-error-message options . rest)
   (update-options options #:errors (cons (delay (apply print rest)) (options-errors options))))
@@ -92,8 +105,14 @@
 (define (options-add-action make-act)
   (lambda (options switch args)
     (update-options options #:actions (cons (make-act options switch args) (options-actions options)))))
+
 (define (action/list options switch args)
-  (delay (print "Listing torrents: " (options-torrent options))))
+  (delay
+    (let ((ids (options-torrent options))
+          (fields '("id" "name")))
+      (let ((res (torrent-get fields #:ids ids)))
+        (show-results res pp)))))
+
 (define (action/remove options switch args)
   (delay (print "Removing torrents: " (options-torrent options))))
 (define (action/remove-and-delete options switch args)
