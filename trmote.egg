@@ -1,0 +1,14 @@
+; vim: ft=scheme
+((author "siiky")
+ (license "unlicense")
+ (synopsis "Transmission Remote")
+ (version "0.0.0")
+ (dependencies
+   cling
+   defstruct
+   srfi-1
+   transmission)
+ (component-options (csc-options "-O0" "-d3"))
+ (components
+   (program trmote
+            (source trmote.scm))))

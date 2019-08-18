@@ -5,3 +5,7 @@
 *.scm~
 *.scm#*
 .#*.scm
+trmote
+*.build.sh
+*.c
+*.install.sh
