@@ -1,6 +1,7 @@
 (import
   scheme
   (only chicken.base
+        compose
         cut
         exit
         print)
@@ -99,12 +100,12 @@
 
 (define (errors-show errors) (for-each force errors) (exit (length errors)))
 (define (options-add-error-message options . rest)
-  (update-options options #:errors (cons (delay (apply print rest)) (options-errors options))))
+  (update-options options #:errors `(,(delay (apply print rest)) . ,(options-errors options))))
 
 (define (actions-run actions) (for-each force actions))
 (define (options-add-action make-act)
   (lambda (options switch args)
-    (update-options options #:actions (cons (make-act options switch args) (options-actions options)))))
+    (update-options options #:actions `(,(make-act options switch args) . ,(options-actions options)))))
 
 (define (action/list options switch args)
   (delay
@@ -133,10 +134,6 @@
          #:help "Hostname of the Transmission daemon"
          #:kons (lambda (ret _ host) (*host* host) ret))
 
-    (arg '((--password) . password)
-         #:help "The RPC password"
-         #:kons (lambda (ret _ password) (*password* password) ret))
-
     (arg '((--port) . port)
          #:help "The RPC server port" #:kons
          (lambda (ret _ port)
@@ -152,6 +149,10 @@
     (arg '((--username) . username)
          #:help "The RPC username"
          #:kons (lambda (ret _ username) (*username* username) ret))
+
+    (arg '((--password) . password)
+         #:help "The RPC password"
+         #:kons (lambda (ret _ password) (*password* password) ret))
 
     (arg '((-t --torrent) . torrent)
          #:help "The target torrents" #:kons
