@@ -38,8 +38,28 @@
         *username*
         torrent-get))
 
-(defstruct options actions errors help torrent)
+;; @brief The options processing state
+;; @param actions A list of actions to run a certain target
+;; @param errors A list of arguments parsing errors
+;; @param help? Should show help?
+;; @param target The torrent(s) the actions will act on. Can be #f for no
+;;        targets, torrents for a list of IDs or hashes, or filename
+;;        for a filename or magnet
+;; @param target-actions The actions for the current target
+;;
+;; TODO: How to promote @a target-actions to @a actions
+;; Before @a target is changed, with `-l` or `-a`, @a target-actions is
+;; promoted to @a actions.
+(defstruct ost actions errors help? target target-actions)
 
+(define (filename str) `(filename . ,str))
+(define (filename? x) (eq? (car x) 'filename))
+(define (torrents tors) `(torrents . ,tors))
+(define (torrents? x) (eq? (car x) 'torrents))
+(define target cdr)
+(define false? not)
+
+; TODO: Replace with a comparse implementation
 (define (string->torrents-list str)
   (define valid-torrent-list?
     (let* ((sha1-re   '(= 40 xdigit))
@@ -83,12 +103,27 @@
 
   (if (valid-torrent-list? str)
       (cond
-        ((string=? str "all") '(#t . #f))
-        ((string=? str "active") '(#t . "recently-active"))
-        (else (let ((res (id-int str))) `(,(not (not res)) . ,res))))
+        ((string=? str "all") `(#t . ,(torrents #f)))
+        ((string=? str "active") `(#t . ,(torrents "recently-active")))
+        ((id-int str) => (lambda (res) `(#t . ,(torrents res))))
+        (else `(#f . #f)))
       '(#f . #f)))
 
-(define (!f? x f) (if x (f x) x))
+(define (!f? x f) (and x (f x)))
+(define (call proc) (proc))
+
+;;
+;; Error procedures
+;;
+
+(define (error-show error) (call error))
+(define (errors-show errors) (for-each error-show errors) (exit (length errors)))
+(define (ost+errmsg ost . rest)
+  (update-ost ost #:errors `(,(cut apply print rest) . ,(ost-errors ost))))
+
+;;
+;; Actions procedures
+;;
 
 (define (show-results results show)
   (let ((results (vector->list results)))
@@ -98,37 +133,55 @@
           (show arguments)
           (print "The server replied with: " result)))))
 
-(define (errors-show errors) (for-each force errors) (exit (length errors)))
-(define (options-add-error-message options . rest)
-  (update-options options #:errors `(,(delay (apply print rest)) . ,(options-errors options))))
+(define (action-run action) (call action))
+(define (actions-run actions) (for-each action-run actions))
+(define ((ost+action make-act) ret switch args)
+  (update-ost
+    ret #:actions
+    `(,(make-act ret switch args) . ,(ost-actions ret))))
 
-(define (actions-run actions) (for-each force actions))
-(define (options-add-action make-act)
-  (lambda (options switch args)
-    (update-options options #:actions `(,(make-act options switch args) . ,(options-actions options)))))
-
-(define (action/list options switch args)
-  (delay
-    (let ((ids (options-torrent options))
-          (fields '("id" "name")))
-      (let ((res (torrent-get fields #:ids ids)))
+(define ((action/list ost switch args))
+  (let ((ids (ost-target ost))
+        (fields '("id" "name")))
+    (when ids ; Temporary workaround. Actions with no target are an error.
+      (let ((res (torrent-get fields #:ids (target ids))))
         (show-results res pp)))))
 
-(define (action/remove options switch args)
-  (delay (print "Removing torrents: " (options-torrent options))))
-(define (action/remove-and-delete options switch args)
-  (delay (print "Removing and deleting torrents: " (options-torrent options))))
+(define ((action/remove ost switch args))
+  (print "Removing torrents: " (target (ost-target ost))))
+(define ((action/remove-and-delete ost switch args))
+  (print "Removing and deleting torrents: " (target (ost-target ost))))
 
+(define (actions+target-actions actions target-actions)
+  (cons (cut actions-run target-actions) actions))
+
+(define (promote-actions ost)
+  (cond
+    ((and (false? (ost-target ost)) ; no previous target
+          (null? (ost-target-actions ost))) ; no target actions
+     ost)
+    ((false? (ost-target ost)) ; target actions, but no target
+     (ost+errmsg ost "Actions with no target: " (ost-target-actions ost)))
+    (else
+      (let ((actions (ost-actions ost))
+            (target-actions (ost-target-actions ost)))
+        (update-ost
+          ost
+          #:actions (actions+target-actions actions target-actions)
+          #:target-actions '())))))
+
+;; CLI Grammar
 (define *OPTS*
   (cling
     (lambda (ret _ rest)
       (if (null? rest) ret
-          (options-add-error-message
-            ret "The following arguments will be ignored -- " rest)))
+          (ost+errmsg ret "The following arguments will be ignored -- " rest)))
+
+    ;; Server connection switches
 
     (arg '((-? -h --help))
          #:help "Show this help message"
-         #:kons (lambda (ret _ _) (update-options ret #:help #t)))
+         #:kons (lambda (ret _ _) (update-ost ret #:help? #t)))
 
     (arg '((--host) . host)
          #:help "Hostname of the Transmission daemon"
@@ -140,10 +193,11 @@
            (let ((port-n (string->number port)))
              (if port-n
                  (begin (*port* port-n) ret)
-                 (options-add-error-message ret "Not a valid port: " port)))))
+                 (ost+errmsg ret "Not a valid port: " port)))))
 
     (arg '((--url) . url)
          #:help "The RPC server path"
+         ; FIXME: Pass as /path/to/rpc and split by / maybe
          #:kons (lambda (ret _ url) (*url* url) ret))
 
     (arg '((--username) . username)
@@ -154,49 +208,63 @@
          #:help "The RPC password"
          #:kons (lambda (ret _ password) (*password* password) ret))
 
-    (arg '((-t --torrent) . torrent)
+    ;; Target switches
+
+    ; TODO: Implement this
+    ; One way to do this is to get the ID of the newly added torrent from the
+    ; result of `torrent-add`, and use that as the target for future calls, but
+    ; `download-dir` doesn't work right this way.
+    (arg '((-a --add) . filename/magnet)
+         #:help "Add torrents to transmission" #:kons
+         (lambda (ret _ filename/magnet)
+           (update-ost (promote-actions ret) #:target #f)))
+
+    (arg '((-t --torrent) . torrents)
          #:help "The target torrents" #:kons
-         (lambda (ret _ torrent)
-           (let ((res (string->torrents-list torrent)))
-             (if (car res)
-                 (update-options ret #:torrent (cdr res))
-                 (options-add-error-message ret "Not a valid torrents list: " torrent)))))
+         (lambda (ret _ torrents)
+           (let* ((res (string->torrents-list torrents))
+                  (ret (update-ost (promote-actions ret) #:target (cdr res))))
+             (if (car res) ret
+                 (ost+errmsg ret "Not a valid torrents list: " torrents)))))
+
+    ;; Action switches
 
     (arg '((-l --list))
          #:help "List torrents"
-         #:kons (options-add-action action/list))
+         #:kons (ost+action action/list))
 
     (arg '((-r --remove))
          #:help "Remove torrents"
-         #:kons (options-add-action action/remove))
+         #:kons (ost+action action/remove))
 
     (arg '((-rad --remove-and-delete))
          #:help "Remove and delete torrents"
-         #:kons (options-add-action action/remove-and-delete))))
+         #:kons (ost+action action/remove-and-delete))))
 
 (define (process-args args)
   (define knil
-    (make-options
+    (make-ost
       #:actions '()
       #:errors '()
-      #:help #f
-      #:torrent '())) ; Act on no torrent
+      #:help? #f
+      #:target #f
+      #:target-actions '()))
   (let* ((ret (process-arguments *OPTS* knil args)))
     (*usage* (lambda (pn) (print "Usage: " pn " [OPTION ...]")))
     (*program-name* (program-name))
-    (update-options
-      ret #:actions (reverse (options-actions ret))
-      #:errors (reverse (options-errors ret)))))
+    (update-ost
+      ret #:actions (reverse (ost-actions ret))
+      #:errors (reverse (ost-errors ret)))))
 
 (define (main args)
-  (let ((options (process-args args)))
+  (let ((ost (process-args args)))
     (cond
       ; Any errors processing the arguments?
-      ((not (null? (options-errors options)))
-       (when (options-help options) (help *OPTS*))
-       (errors-show (options-errors options)))
-      ((options-help options)
+      ((not (null? (ost-errors ost)))
+       (when (ost-help? ost) (help *OPTS*))
+       (errors-show (ost-errors ost)))
+      ((ost-help? ost)
        (help *OPTS*))
-      (else (actions-run (options-actions options))))))
+      (else (actions-run (ost-actions ost))))))
 
 (main (command-line-arguments))
