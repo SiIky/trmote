@@ -85,7 +85,7 @@
         ((double? int)
          (let ((fst (string->number (car int)))
                (snd (string->number (cadr int))))
-           (if (and fst snd (<= fst snd))
+           (if (and fst snd (positive? fst) (<= fst snd))
                `(,fst ,snd)
                `(#f))))))
 
