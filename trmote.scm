@@ -24,11 +24,31 @@
         cling
         help
         process-arguments)
+  (only comparse
+        ->parser-input
+        any-of
+        as-string
+        bind
+        fail
+        in
+        is
+        item
+        one-or-more
+        parse
+        preceded-by
+        repeated
+        result
+        sequence
+        zero-or-more)
   (only defstruct defstruct)
   (only srfi-1
         append-map
+        concatenate
         every
         iota)
+  (only srfi-14
+        char-set:digit
+        char-set:hex-digit)
   (only transmission
         *host*
         *password*
@@ -58,57 +78,43 @@
 (define (tgt-torrents? x) (eq? (car x) 'tgt-torrents))
 (define tgt-unwrap cdr)
 (define false? not)
-
-; TODO: Replace with a comparse implementation
-(define (string->torrents-list str)
-  (define valid-torrent-list?
-    (let* ((sha1-re   '(= 40 xdigit))
-           (number-re '(+ num))
-           (number-re `(seq ,number-re (* (seq "-" ,number-re))))
-           (tor-re    `(or ,sha1-re ,number-re))
-           (re        `(seq ,tor-re (* (seq "," ,tor-re))))
-           (re        `(or "all" "active" ,re))
-           (re         (sre->irregex re)))
-      (lambda (str)
-        (irregex-match? re str))))
-
-  (define (id-int ret)
-    (define (single? l) (and (pair? l) (null? (cdr l))))
-    (define (double? l) (and (pair? l) (single? (cdr l))))
-    (define (enum-from-to from to) (iota (add1 (- to from)) from))
-    (define (str->numbers int)
-      (cond
-        ((single? int)
-         (if (= (string-length (car int)) 40) ; SHA-1 ?
-             int
-             `(,(string->number (car int))))) ; Assume its an ID otherwise
-        ((double? int)
-         (let ((fst (string->number (car int)))
-               (snd (string->number (cadr int))))
-           (if (and fst snd (positive? fst) (<= fst snd))
-               `(,fst ,snd)
-               `(#f))))))
-
-    (define (ids->ids-list int)
-      (cond ((single? int) int)
-            ((double? int) (enum-from-to (car int) (cadr int)))))
-
-    (let* ((ret (string-split ret ","))
-           (ret (map (cut string-split <> "-") ret))
-           (ret (map str->numbers ret))
-           (ret (append-map ids->ids-list ret)))
-      (and (every identity ret) ret)))
-
-  (if (valid-torrent-list? str)
-      (cond
-        ((string=? str "all")          `(#t . ,(tgt-torrents #f)))
-        ((string=? str "active")       `(#t . ,(tgt-torrents "recently-active")))
-        ((id-int str) => (lambda (res) `(#t . ,(tgt-torrents res))))
-        (else                          `(#f . #f)))
-      '(#f . #f)))
-
 (define (!f? x f) (and x (f x)))
 (define (call proc) (proc))
+
+(define (string->torrents-list str)
+  (define (enum-from-to from to) (iota (add1 (- to from)) from))
+  (define (times x parser) (repeated parser #:min x #:max x))
+  (define (as-number parser) (bind (as-string parser) (o result string->number)))
+  (define digit (in char-set:digit))
+  (define hexdigit (in char-set:hex-digit))
+  (define number (as-number (one-or-more digit)))
+  (define (list-of parser) (bind parser (o result list)))
+  (define torrent-hash (list-of (as-string (times 40 hexdigit))))
+  (define torrent-id (list-of number))
+
+  (define torrent-interval
+    (bind (sequence torrent-id (is #\-) torrent-id)
+          (lambda (id-id)
+            (let ((from (caar id-id))
+                  (to (caaddr id-id)))
+              (lambda (rest)
+                (if (<= from to)
+                    (cons (enum-from-to from to) rest)
+                    (fail rest)))))))
+
+  (define torrent (any-of torrent-interval torrent-hash torrent-id))
+  (define comma-torrent (preceded-by (is #\,) torrent))
+  (define torrent-list
+    (bind (sequence torrent (zero-or-more comma-torrent))
+          (lambda (tor-tor)
+            (result (concatenate (cons (car tor-tor) (cadr tor-tor)))))))
+
+  (cond
+    ((string=? str "all") `(#t . ,(tgt-torrents #f)))
+    ((string=? str "active") `(#t . ,(tgt-torrents "recently-active")))
+    ((parse torrent-list (->parser-input str))
+     => (lambda (res) `(#t . ,(tgt-torrents res))))
+    (else `(#f . #f))))
 
 ;;
 ;; Error procedures

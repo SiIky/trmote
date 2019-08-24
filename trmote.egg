@@ -5,8 +5,10 @@
  (version "0.0.0")
  (dependencies
    cling
+   comparse
    defstruct
    srfi-1
+   srfi-14
    transmission)
  (component-options (csc-options "-O0" "-d3"))
  (components
