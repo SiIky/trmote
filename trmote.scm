@@ -5,9 +5,6 @@
         cut
         exit
         print)
-  (only chicken.irregex
-        irregex-match?
-        sre->irregex)
   (only chicken.pretty-print
         pp)
   (only chicken.process-context
@@ -29,7 +26,9 @@
         any-of
         as-string
         bind
+        end-of-input
         fail
+        followed-by
         in
         is
         item
@@ -82,32 +81,41 @@
 (define (call proc) (proc))
 
 (define (string->torrents-list str)
+  ; torrents-list := torrent
+  ;                | torrent torrents-list
+  ;
+  ; torrent := torrent-id
+  ;          | torrent-id-interval
+  ;          | torrent-hash
+  ;
+  ; torrent-id := number
+  ; torrent-id-interval := torrent-id '-' torrent-id
+  ; torrent-hash := hexdigit{40}
   (define (enum-from-to from to) (iota (add1 (- to from)) from))
   (define (times x parser) (repeated parser #:min x #:max x))
   (define (as-number parser) (bind (as-string parser) (o result string->number)))
   (define digit (in char-set:digit))
   (define hexdigit (in char-set:hex-digit))
   (define number (as-number (one-or-more digit)))
-  (define (list-of parser) (bind parser (o result list)))
-  (define torrent-hash (list-of (as-string (times 40 hexdigit))))
-  (define torrent-id (list-of number))
+  (define (as-list parser) (bind parser (o result list)))
+  (define torrent-hash (as-list (as-string (times 40 hexdigit))))
+  (define torrent-id (as-list number))
+  (define (list-sep-of sep parser) (sequence parser (zero-or-more (preceded-by sep parser))))
 
-  (define torrent-interval
-    (bind (sequence torrent-id (is #\-) torrent-id)
+  (define torrent-id-interval
+    (bind (sequence torrent-id (preceded-by (is #\-) torrent-id))
           (lambda (id-id)
             (let ((from (caar id-id))
-                  (to (caaddr id-id)))
+                  (to (caadr id-id)))
               (lambda (rest)
                 (if (<= from to)
                     (cons (enum-from-to from to) rest)
                     (fail rest)))))))
 
-  (define torrent (any-of torrent-interval torrent-hash torrent-id))
-  (define comma-torrent (preceded-by (is #\,) torrent))
+  (define (torrent) (any-of torrent-id-interval torrent-hash torrent-id))
   (define torrent-list
-    (bind (sequence torrent (zero-or-more comma-torrent))
-          (lambda (tor-tor)
-            (result (concatenate (cons (car tor-tor) (cadr tor-tor)))))))
+    (bind (followed-by (list-sep-of (is #\,) (torrent)) end-of-input)
+          (o result flatten)))
 
   (cond
     ((string=? str "all") `(#t . ,(tgt-torrents #f)))
@@ -145,6 +153,7 @@
     (update-ost ret #:target-actions (cons ta tas))))
 
 (define (((action/list _ _ _) ids))
+  (print ids)
   (assert (tgt-torrents? ids))
   (let ((fields '("id" "name"))
         (ids (tgt-unwrap ids)))

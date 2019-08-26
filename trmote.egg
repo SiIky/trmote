@@ -10,7 +10,9 @@
    srfi-1
    srfi-14
    transmission)
- (component-options (csc-options "-O0" "-d3"))
+ (component-options
+   (csc-options "-O0" "-d3")
+   (linkage static))
  (components
    (program trmote
             (source trmote.scm))))

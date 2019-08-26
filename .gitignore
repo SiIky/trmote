@@ -9,3 +9,4 @@ trmote
 *.build.sh
 *.c
 *.install.sh
+*.link
