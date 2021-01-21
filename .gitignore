@@ -1,0 +1,12 @@
+*.ss~
+*.ss#*
+.#*.ss
+
+*.scm~
+*.scm#*
+.#*.scm
+transmission-filter
+transmission-labels
+transmission-update-seed-priority
+*.build.sh
+*.install.sh

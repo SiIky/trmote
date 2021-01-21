@@ -1,0 +1,21 @@
+; vim: ft=scheme
+((author "siiky")
+ (license "unlicense")
+ (synopsis "Transmission Examples")
+ (version "0.0.0")
+ (dependencies
+   cling
+   daemon
+   srfi-1
+   srfi-42
+   transmission
+   typed-records)
+ (component-options
+   (csc-options "-O3" "-d3")
+   ; It seems `daemon` can't be linked statically...
+   ;(linkage static)
+   )
+ (components
+   (program transmission-labels)
+   (program transmission-update-seed-priority)
+   (program transmission-filter)))
