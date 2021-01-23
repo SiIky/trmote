@@ -4,6 +4,7 @@
            authenv
            username
            password
+           help
            rest)
 
 (define-syntax eprint
@@ -15,6 +16,10 @@
   (cling
     (lambda (ret . rest)
       (update-connection-options ret #:rest (cadr rest)))
+
+    (arg '((--help -h -?))
+         #:help "Show this help text"
+         #:kons (lambda (ret _ _) (update-connection-options ret #:help #t)))
 
     (arg '((--host) . host)
          #:help "The host of the transmission instance"
@@ -62,7 +67,7 @@
     (else #f))
   #t)
 
-(define (set-connection-options! #!optional (args (command-line-arguments)))
+(define (update-connection-options! args)
   (let ((options (process-arguments *connection-opts* (make-connection-options) args)))
     (set-parameters!
       #:host (connection-options-host options)
@@ -70,4 +75,8 @@
       #:authenv (connection-options-authenv options)
       #:username (connection-options-username options)
       #:password (connection-options-password options))
-    (values (connection-options-rest options) options)))
+    (values (connection-options-rest options)
+            (connection-options-help options))))
+
+(define (parse-torrent-ids-string str)
+  (error 'parse-torrent-ids-string "UNIMPLEMENTED!"))

@@ -8,5 +8,6 @@
 transmission-filter
 transmission-labels
 transmission-update-seed-priority
+transmission-verify
 *.build.sh
 *.install.sh

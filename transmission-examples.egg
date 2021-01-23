@@ -16,6 +16,7 @@
    ;(linkage static)
    )
  (components
+   (program transmission-filter)
    (program transmission-labels)
    (program transmission-update-seed-priority)
-   (program transmission-filter)))
+   (program transmission-verify)))

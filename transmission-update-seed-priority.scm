@@ -34,7 +34,6 @@
            every
            logfile
 
-           help
            rest
            )
 
@@ -42,11 +41,6 @@
   (cling
     (lambda (ret . rest)
       (update-options ret #:rest rest))
-
-    (arg '((-h --help))
-         #:help "Show this help text"
-         #:kons (lambda (ret _ _) (update-options ret #:help #t)))
-
 
     (arg '((--high-priority-ratio) . ratio)
          #:help "Torrents with ratio < this are considered high priority."
@@ -88,10 +82,17 @@
   (help *connection-opts*)
   (help *OPTS*))
 
-(define (process-arguments* #!optional (args (command-line-arguments)))
-  (process-arguments *OPTS*
-                     (make-options #:low-priority-ratio 4 #:high-priority-ratio 2)
-                     (set-connection-options! args)))
+(define (process-arguments* args)
+  (let-values (((args help?) (update-connection-options! args)))
+    (values (process-arguments *OPTS*
+                               (make-options
+                                 #:low-priority-ratio 4
+                                 #:high-priority-ratio 2
+                                 #:every (* 10 60)
+                                 #:logfile #t
+                                 )
+                               args)
+            help?)))
 
 (define ((alist? key-pred? #!optional (value-predicate? (constantly #t))) lst)
   (and (list? lst)
@@ -166,30 +167,26 @@
     (sleep every)))
 
 (define (update-priorities/daemon low high every logfile)
-  (let ((logfile (or logfile #t))
-        (every (or every (* 10 60))))
-    (daemon (cute update-priorities/every low high every)
-            #:stderr logfile
-            #:stdout logfile
-            #:want-pid? #t
-            #:killothers? #t)))
+  (daemon (cute update-priorities/every low high every)
+          #:stderr logfile
+          #:stdout logfile
+          #:want-pid? #t
+          #:killothers? #t))
 
 (define (main args)
-  (let ((options (process-arguments* args)))
+  (let-values (((options help?) (process-arguments* args)))
     (let ((low (options-low-priority-ratio options))
           (high (options-high-priority-ratio options))
           (every (options-every options))
           (logfile (options-logfile options)))
       (cond
-        ((options-help options)
-         (help*))
+        (help? (help*))
 
         ((options-daemon options)
          (let ((pid (update-priorities/daemon low high every logfile)))
            (unless pid
-             (eprint "Failed to start daemon")
-             (exit 1))
-           (eprint "Daemon started -- PID " pid)
+             (error 'main "Failed to start daemon"))
+           (eprint "Daemon started with PID " pid)
            (print pid)))
 
         (every
