@@ -30,8 +30,9 @@
            high-priority-ratio
            low-priority-ratio
 
-           daemon
            every
+           every?
+           daemon
            logfile
 
            rest
@@ -65,7 +66,7 @@
                   (let ((every (string->number every)))
                     (assert every)
                     (assert (positive? every))
-                    (update-options ret #:every every))))
+                    (update-options ret #:every every #:every? #t))))
 
     (arg '((--daemon))
          #:help "Combined with --every, update periodically in the background."
@@ -178,21 +179,21 @@
     (let ((low (options-low-priority-ratio options))
           (high (options-high-priority-ratio options))
           (every (options-every options))
+          (every? (options-every? options))
+          (daemon? (options-daemon options))
           (logfile (options-logfile options)))
       (cond
-        (help? (help*))
+        (help?  (help*))
 
-        ((options-daemon options)
-         (let ((pid (update-priorities/daemon low high every logfile)))
-           (unless pid
-             (error 'main "Failed to start daemon"))
-           (eprint "Daemon started with PID " pid)
-           (print pid)))
+        (every?
+          (if daemon?
+              (let ((pid (update-priorities/daemon low high every logfile)))
+                (unless pid
+                  (error 'main "Failed to start daemon"))
+                (eprint "Daemon started with PID " pid)
+                (print pid))
+              (update-priorities/every low high every)))
 
-        (every
-          (update-priorities/every low high every))
-
-        (else
-          (update-priorities low high))))))
+        (else (update-priorities low high))))))
 
 (main (command-line-arguments))
