@@ -131,8 +131,30 @@
 (define (get-torrents #!optional ids)
   (get-torrents* '("hashString" "id" "percentDone" "totalSize") ids))
 
+(define (get-torrents/hashes #!optional ids)
+  (let ((ret (get-torrents* '("hashString") ids)))
+    (if ret
+        (let ((ret (map torrent-hash ret)))
+          (assert (every identity ret) "Some torrents didn't have the `hashString` field -- this shouldn't happen!")
+          ret)
+        '())))
+
+; NOTE: This procedure doesn't actually check that a torrent has been verified,
+;       but that it's not being checked or queued to be checked. Therefore, it
+;       assumes the torrent was put on queue to be verified, i.e.,
+;       `torrent-verify` was called for it.
 (define (verified? hash)
-  #t)
+  (with-transmission-result
+    (torrent-get '("status") #:ids hash)
+    ; NOTE: If the call succeeds but we get no torrent or hash, then maybe the
+    ;       torrent doesn't exist (anymore?). Let's assume that.
+    (lambda (r . _)
+      (alist-let/or r (torrents)
+                    (alist-let/or torrents (status)
+                                  (not (or (= status status/check-wait)
+                                           (= status status/check))))))
+    ; TODO: Try to distinguish failure reasons.
+    (constantly #f)))
 
 (define (start-verifying torrent)
   (and-let* ((hash (torrent-hash torrent)))
@@ -142,11 +164,9 @@
   (and-let* ((hash (torrent-hash torrent)))
     ; TODO: Smarten up this loop (e.g., smarter sleep times).
     (let loop ((sleep-time 10)) ; seconds
-      (cond
-        ((verified? hash) #t)
-        (else
-          (sleep sleep-time)
-          (loop sleep-time))))))
+      (unless (verified? hash)
+        (sleep sleep-time)
+        (loop sleep-time)))))
 
 (define ((verify/next sort) verifying verified to-verify include-new?)
   (let ((verified (if verifying (cons verifying verified) verified))
@@ -181,7 +201,6 @@
       (let loop ((verifying verifying)
                  (verified verified)
                  (to-verify to-verify))
-
         (verify/single verifying)
         (let-values (((verifying verified to-verify) (verify/next verifying verified to-verify include-new?)))
           (or (null? to-verify)
@@ -200,7 +219,8 @@
           (sort (sort/by (options-sort-by options)))
           (daemon (options-daemon options))
           (logfile (options-logfile options)))
-      (let ((action (verify/action torrent sort)))
+      (let ((action (verify/action torrent sort))
+            (torrent (and torrent (get-torrents/hashes torrent))))
         (cond
           (help? (help*))
           ((null? torrent) #f) ; noop
