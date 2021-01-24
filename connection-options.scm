@@ -18,27 +18,27 @@
       (update-connection-options ret #:rest (cadr rest)))
 
     (arg '((--help -h -?))
-         #:help "Show this help text"
+         #:help "Show this help text."
          #:kons (lambda (ret _ _) (update-connection-options ret #:help #t)))
 
     (arg '((--host) . host)
-         #:help "The host of the transmission instance"
+         #:help "The host of the transmission instance."
          #:kons (lambda (ret _ host) (update-connection-options ret #:host host)))
 
     (arg '((--port) . port)
-         #:help "The port of the transmission instance"
+         #:help "The port of the transmission instance."
          #:kons (lambda (ret _ port) (update-connection-options ret #:port port)))
 
     (arg '((--username) . username)
-         #:help "The username to access the transmission instance"
+         #:help "The username to access the transmission instance."
          #:kons (lambda (ret _ username) (update-connection-options ret #:username username)))
 
     (arg '((--password) . password)
-         #:help "The password to access the transmission instance"
+         #:help "The password to access the transmission instance."
          #:kons (lambda (ret _ password) (update-connection-options ret #:password password)))
 
     (arg '((--authenv -ne))
-         #:help "Like transmission-remote, use the environment variable TR_AUTH"
+         #:help "Like transmission-remote, use the environment variable TR_AUTH."
          #:kons (lambda (ret _ _) (update-connection-options ret #:authenv #t)))))
 
 (define (set-parameters! #!key host port authenv username password)

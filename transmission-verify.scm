@@ -24,6 +24,28 @@
 
            rest)
 
+(define *status-order*
+  (make-parameter
+    `(
+      ; NOTE: `check` & `check-wait` first to try to avoid rechecking -- only
+      ;        useful in case another client is being used concurrently.
+      ,status/check
+      ,status/check-wait
+      ; NOTE: If we're asking to verify torrents, it's probably because we
+      ;       suspect they might be corrupt. This status is the one in which a
+      ;       peer can suffer most from corrupt files, because if corrupted
+      ;       pieces are being sent to other peers, they'll eventually stop
+      ;       asking us for anything. The faster we can get seeding torrents
+      ;       checked, the faster they can resume seeding.
+      ,status/seed
+      ,status/download
+      ,status/seed-wait
+      ,status/download-wait
+      ; NOTE: Least priority, because we clearly don't care about a stopped
+      ;       torrent's files' integrity.
+      ,status/stopped
+      )))
+
 (define ((sort-by/<predicate key default <?) t1 t2)
   (let ((atr1 (alist-ref key t1 eq? default))
         (atr2 (alist-ref key t2 eq? default)))
@@ -32,10 +54,40 @@
 (define *sort-by/<predicates*
   `(
     ("id" . ,(sort-by/<predicate 'id 0 <))
-    ("progress" . ,(sort-by/<predicate 'percentDone 0 <))
+    ("latest-activity" . ,(sort-by/<predicate 'activityDate 0 >))
+    ("priority" . ,(sort-by/<predicate 'bandwidthPriority priority/low >))
+    ("progress" . ,(sort-by/<predicate 'percentDone 0 >))
+    ; NOTE: Sorted in an ascending manner, i.e., lesser ratio means higher
+    ;       priority, because it needs to be seeded more than a torrent with
+    ;       greater ratio.
     ("ratio" . ,(sort-by/<predicate 'uploadRatio 0 <))
+    ("status" . ,(sort-by/<predicate 'status 0 (lambda (s1 s2) (member s2 (cdr (member s1 (*status-order*)))))))
     ("total-size" . ,(sort-by/<predicate 'totalSize 0 <))
+
+    ; NOTE: Sorted in an ascending manner, i.e., smaller size means higher
+    ;       priority, because it's the quickest way to get the greatest number
+    ;       of torrents "out of the door".
+    ("progress*total-size"
+     . (lambda (t1 t2)
+         (let ((p1 (alist-ref 'progress t1 eq? 0))
+               (ts1 (alist-ref 'totalSize t1 eq? 0))
+               (p2 (alist-ref 'progress t2 eq? 0))
+               (ts2 (alist-ref 'totalSize t2 eq? 0)))
+           (< (* p1 ts1) (* p2 ts2)))))
     ))
+
+(define (status-str->status-int str)
+  (let ((rel `(("stopped"       . ,status/stopped)
+               ("check-wait"    . ,status/check-wait)
+               ("check"         . ,status/check)
+               ("download-wait" . ,status/download-wait)
+               ("download"      . ,status/download)
+               ("seed-wait"     . ,status/seed-wait)
+               ("seed"          . ,status/seed))))
+    (alist-ref str rel string=? #f)))
+
+(define (status-str-list->status-int-list l)
+  (map status-str->status-int l))
 
 (define *sort-by/alternatives* (map car *sort-by/<predicates*))
 
@@ -49,9 +101,13 @@
   (map sort-by-str->sort-by-pred l))
 
 (define ((sort/by sort-by) l)
-  (define (<? t1 t2)
-    (fold-left (lambda (<? ret) (or ret (<? t1 t2))) sort-by))
-  (sort l <?))
+  (let* ((<? (lambda (t1 t2)
+               (fold-left (lambda (<? ret) (or ret (<? t1 t2))) sort-by))))
+    (sort l <?)))
+
+(define (status/verifying? status)
+  (or (= status status/check-wait)
+      (= status status/check)))
 
 (define *OPTS*
   (cling
@@ -65,17 +121,25 @@
                          (invalid (filter (complement (cute member <> *sort-by/alternatives* string=?)) sort-by)))
                     (cond
                       ((null? sort-by)
-                       (error '--sort-by "`sort-key` must be in " *sort-by/alternatives*))
+                       (error '--sort-by "`sort-key` must not be empty."))
                       ((null? invalid)
                        (update-options ret #:sort-by (sort-by-str-list->sort-by-pred-list sort-by)))
                       (else
                         (error '--sort-by "The following `sort-by` keys are not valid: " invalid ". `sort-by` must be in " *sort-by/alternatives*))))))
 
     ; TODO: Parse the given string.
+    (arg '((--status-order) . status-order)
+         #:help "The order to sort statuses by. Only useful if `status` is specified with `--sort-by`."
+         #:kons (lambda (ret _ status-order)
+                  (eprint "`--status-order` isn't implemented yet -- ignoring and using the default order of " (*status-order*))
+                  (update-options ret #:status-order (*status-order*))))
+
+    ; TODO: Parse the given string.
     (arg '((--torrent -t) . torrent)
          #:help "The torrents to verify (all by default)."
          #:kons (lambda (ret _ torrent)
-                  (update-options ret #:torrent torrent)))
+                  (eprint "`--torrent` isn't implemented yet -- ignoring and acting on all torrents.")
+                  (update-options ret #:torrent #f)))
 
 
     (arg '((--daemon))
@@ -94,10 +158,24 @@
   (help *OPTS*))
 
 (define (process-arguments* args)
+  (define sort-by
+    '(
+      ; NOTE: `status`, `priority`, `latest-activity`, and `ratio` basically
+      ;       all give order based on a torrent's priority, while
+      ;       `progress*total-size` gives order based on how quickly a torrent
+      ;       can be verified, i.e., smaller torrents can be verified in less
+      ;       time than larger torrents.
+      "status"
+      "priority"
+      "latest-activity"
+      "ratio"
+      "progress*total-size"
+      ))
+
   (let-values (((args help?) (update-connection-options! args)))
     (values (process-arguments *OPTS*
                                (make-options
-                                 #:sort-by (sort-by-str-list->sort-by-pred-list '("total-size" "ratio"))
+                                 #:sort-by (sort-by-str-list->sort-by-pred-list sort-by)
                                  #:logfile #t
                                  )
                                args)
@@ -129,7 +207,7 @@
                             (constantly #f)))
 
 (define (get-torrents #!optional ids)
-  (get-torrents* '("hashString" "id" "percentDone" "totalSize") ids))
+  (get-torrents* '("activityDate" "bandwidthPriority" "hashString" "id" "percentDone" "totalSize" "status") ids))
 
 (define (get-torrents/hashes #!optional ids)
   (let ((ret (get-torrents* '("hashString") ids)))
@@ -139,8 +217,18 @@
           ret)
         '())))
 
+(define (torrent-status torrent #!optional (default status/seed-wait))
+  (if torrent
+      (torrent-ref torrent 'status default)
+      default))
+
+(define (torrent-status! torrent)
+  (let ((r (get-torrents* '("status") torrent)))
+    (and r
+         (torrent-status (car r)))))
+
 ; NOTE: This procedure doesn't actually check that a torrent has been verified,
-;       but that it's not being checked or queued to be checked. Therefore, it
+;       but that it's not being checked nor queued to be checked. Therefore, it
 ;       assumes the torrent was put on queue to be verified, i.e.,
 ;       `torrent-verify` was called for it.
 (define (verified? hash)
@@ -153,12 +241,16 @@
                     (alist-let/or torrents (status)
                                   (not (or (= status status/check-wait)
                                            (= status status/check))))))
+    ; FIXME: If, for example, Transmission goes down, this results in an
+    ;        infinite loop until the process is killed or Transmission is
+    ;        started up again.
     ; TODO: Try to distinguish failure reasons.
     (constantly #f)))
 
 (define (start-verifying torrent)
   (and-let* ((hash (torrent-hash torrent)))
-    (try-n 2 (cut with-transmission-result (torrent-verify hash) (constantly #t) (constantly #f)))))
+    (or (status/verifying? (torrent-status! hash))
+        (try-n 2 (cut with-transmission-result (torrent-verify hash) (constantly #t) (constantly #f))))))
 
 (define (wait-until-verified torrent)
   (and-let* ((hash (torrent-hash torrent)))

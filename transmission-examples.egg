@@ -16,7 +16,8 @@
    ;(linkage static)
    )
  (components
-   (program transmission-filter)
-   (program transmission-labels)
-   (program transmission-update-seed-priority)
-   (program transmission-verify)))
+   (program transmission-filter (source-dependencies connection-options.scm))
+   (program transmission-labels (source-dependencies connection-options.scm))
+   (program transmission-update-seed-priority (source-dependencies connection-options.scm))
+   (program transmission-verify (source-dependencies connection-options.scm))
+   ))
