@@ -57,6 +57,7 @@
     ("latest-activity" . ,(sort-by/<predicate 'activityDate 0 >))
     ("priority" . ,(sort-by/<predicate 'bandwidthPriority priority/low >))
     ("progress" . ,(sort-by/<predicate 'percentDone 0 >))
+    ("queue-position" . ,(sort-by/<predicate 'queuePosition 0 <))
     ; NOTE: Sorted in an ascending manner, i.e., lesser ratio means higher
     ;       priority, because it needs to be seeded more than a torrent with
     ;       greater ratio.
@@ -203,11 +204,22 @@
 
 (define (get-torrents* fields #!optional ids)
   (with-transmission-result (torrent-get fields #:ids ids)
-                            (lambda (r . _) (alist-ref 'torrents r eq? '()))
+                            (lambda (r . _) (vector->list (alist-ref 'torrents r eq? #())))
                             (constantly #f)))
 
 (define (get-torrents #!optional ids)
-  (get-torrents* '("activityDate" "bandwidthPriority" "hashString" "id" "percentDone" "totalSize" "status") ids))
+  (let ((fields
+          '(
+            "activityDate"
+            "bandwidthPriority"
+            "hashString"
+            "id"
+            "percentDone"
+            "queuePosition"
+            "status"
+            "totalSize"
+            )))
+    (get-torrents* fields ids)))
 
 (define (get-torrents/hashes #!optional ids)
   (let ((ret (get-torrents* '("hashString") ids)))
