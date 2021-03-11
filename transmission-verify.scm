@@ -1,6 +1,7 @@
 (import
   chicken.process-context
   chicken.string
+  chicken.sort
   chicken.port)
 
 (import
@@ -9,12 +10,12 @@
   typed-records)
 
 (import
+  daemon
   transmission
   transmission.utils)
 
 (include "connection-options.scm")
 
-; TODO: Order by status as well.
 (defstruct options
            sort-by
            torrent
@@ -62,19 +63,19 @@
     ;       priority, because it needs to be seeded more than a torrent with
     ;       greater ratio.
     ("ratio" . ,(sort-by/<predicate 'uploadRatio 0 <))
-    ("status" . ,(sort-by/<predicate 'status 0 (lambda (s1 s2) (member s2 (cdr (member s1 (*status-order*)))))))
+    ("status" . ,(sort-by/<predicate 'status 0 (lambda (s1 s2) (not (not (member s2 (cdr (member s1 (*status-order*)))))))))
     ("total-size" . ,(sort-by/<predicate 'totalSize 0 <))
 
     ; NOTE: Sorted in an ascending manner, i.e., smaller size means higher
     ;       priority, because it's the quickest way to get the greatest number
     ;       of torrents "out of the door".
     ("progress*total-size"
-     . (lambda (t1 t2)
-         (let ((p1 (alist-ref 'progress t1 eq? 0))
-               (ts1 (alist-ref 'totalSize t1 eq? 0))
-               (p2 (alist-ref 'progress t2 eq? 0))
-               (ts2 (alist-ref 'totalSize t2 eq? 0)))
-           (< (* p1 ts1) (* p2 ts2)))))
+     . ,(lambda (t1 t2)
+          (let ((p1 (alist-ref 'progress t1 eq? 0))
+                (ts1 (alist-ref 'totalSize t1 eq? 0))
+                (p2 (alist-ref 'progress t2 eq? 0))
+                (ts2 (alist-ref 'totalSize t2 eq? 0)))
+            (< (* p1 ts1) (* p2 ts2)))))
     ))
 
 (define (status-str->status-int str)
@@ -102,9 +103,11 @@
   (map sort-by-str->sort-by-pred l))
 
 (define ((sort/by sort-by) l)
-  (let* ((<? (lambda (t1 t2)
-               (fold-left (lambda (<? ret) (or ret (<? t1 t2))) sort-by))))
-    (sort l <?)))
+  (define (<*? t1 t2)
+    (define (kons <? ret)
+      (or ret (<? t1 t2)))
+    (fold kons #f sort-by))
+  (sort l <*?))
 
 (define (status/verifying? status)
   (or (= status status/check-wait)
@@ -151,7 +154,7 @@
     (arg '((--logfile) . logfile)
          #:help "Combined with --daemon, save program output to LOGFILE"
          #:kons (lambda (ret _ logfile)
-                  (update-options ret #:logfile (normalize-pathname (make-absolute-pathname (current-directory) logfile)))))
+                  (update-options ret #:logfile logfile)))
     ))
 
 (define (help*)
@@ -173,7 +176,7 @@
       "progress*total-size"
       ))
 
-  (let-values (((args help?) (update-connection-options! args)))
+  (receive (args help?) (update-connection-options! args)
     (values (process-arguments *OPTS*
                                (make-options
                                  #:sort-by (sort-by-str-list->sort-by-pred-list sort-by)
@@ -225,7 +228,7 @@
   (let ((ret (get-torrents* '("hashString") ids)))
     (if ret
         (let ((ret (map torrent-hash ret)))
-          (assert (every identity ret) "Some torrents didn't have the `hashString` field -- this shouldn't happen!")
+          (assert (every identity ret) "Some torrents didn't have the `hashString` field -- this shouldn't have happened!")
           ret)
         '())))
 
@@ -244,25 +247,27 @@
 ;       assumes the torrent was put on queue to be verified, i.e.,
 ;       `torrent-verify` was called for it.
 (define (verified? hash)
-  (with-transmission-result
-    (torrent-get '("status") #:ids hash)
-    ; NOTE: If the call succeeds but we get no torrent or hash, then maybe the
-    ;       torrent doesn't exist (anymore?). Let's assume that.
-    (lambda (r . _)
-      (alist-let/or r (torrents)
-                    (alist-let/or torrents (status)
-                                  (not (or (= status status/check-wait)
-                                           (= status status/check))))))
-    ; FIXME: If, for example, Transmission goes down, this results in an
-    ;        infinite loop until the process is killed or Transmission is
-    ;        started up again.
-    ; TODO: Try to distinguish failure reasons.
-    (constantly #f)))
+  ; NOTE: If the call succeeds but we get no torrent or hash, then maybe the
+  ;       torrent doesn't exist (anymore?). Let's assume that.
+  ; FIXME: If, for example, Transmission goes down, this results in an
+  ;        infinite loop until the process is killed or Transmission is
+  ;        started up again.
+  ; TODO: Try to distinguish failure reasons.
+  (and-let* ((torrents (get-torrents* '("status") hash)))
+    (every (lambda (torrent)
+             (alist-let/nor torrent (status)
+                            (not (status/verifying? status))))
+           torrents)))
 
 (define (start-verifying torrent)
+  (define ((verify* hash))
+    (define true (constantly #t))
+    (define false (constantly #f))
+    (with-transmission-result (torrent-verify #:ids hash) true false))
+
   (and-let* ((hash (torrent-hash torrent)))
     (or (status/verifying? (torrent-status! hash))
-        (try-n 2 (cut with-transmission-result (torrent-verify hash) (constantly #t) (constantly #f))))))
+        (try-n 2 (verify* hash)))))
 
 (define (wait-until-verified torrent)
   (and-let* ((hash (torrent-hash torrent)))
@@ -273,23 +278,22 @@
         (loop sleep-time)))))
 
 (define ((verify/next sort) verifying verified to-verify include-new?)
-  (let ((verified (if verifying (cons verifying verified) verified))
-        (ids (if include-new?
-                 #f
-                 (filter identity (map torrent-hash to-verify)))))
+  (define (diff to-verify verified)
+    (lset-difference
+      (lambda (a b) (string=? (torrent-hash a) b))
+      to-verify verified))
+
+  (let ((verified (if verifying (cons (torrent-hash verifying) verified) verified))
+        (ids (if include-new? #f to-verify)))
     (let ((to-verify (get-torrents ids)))
       (unless to-verify
         (error 'verify/next "Failed to get torrents: " ids))
 
-      (let ((to-verify (sort (filter (lambda (t)
-                                       (member (torrent-hash t)
-                                               verified
-                                               (lambda (h t)
-                                                 (string=? h (torrent-hash t)))))
-                                     to-verify))))
-        (if (null? to-verify)
-            (values #f verified '())
-            (values (car to-verify) verified (cdr to-verify)))))))
+      (let ((to-verify (filter identity (map torrent-hash (sort (diff to-verify verified))))))
+        (values verified to-verify)))))
+
+(define (verify/first sort ids include-new?)
+  ((verify/next sort) #f '() (get-torrents/hashes ids) include-new?))
 
 (define (verify/single torrent)
   (let ((hash (torrent-hash torrent)))
@@ -298,46 +302,49 @@
 
 (define (verify sort ids include-new?)
   (let ((verify/next (verify/next sort)))
-    (let-values (((verifying verified to-verify)
-                  (if ids
-                      (verify/next #f '() (get-torrents ids) #f)
-                      (verify/next #f '() '()                #t))))
-      (let loop ((verifying verifying)
-                 (verified verified)
+    (receive (verified to-verify) (verify/first sort ids include-new?)
+      (let loop ((verified verified)
                  (to-verify to-verify))
-        (verify/single verifying)
-        (let-values (((verifying verified to-verify) (verify/next verifying verified to-verify include-new?)))
-          (or (null? to-verify)
-              (loop verifying verified to-verify)))))))
+        (unless (null? to-verify)
+          (let ((verifying (car to-verify))
+                (to-verify (cdr to-verify)))
+            (verify/single verifying)
+            (receive (verified to-verify) (verify/next verifying verified to-verify include-new?)
+              (loop verified to-verify))))))))
 
-(define (verify/action torrent sort)
+(define ((verify/action torrent sort))
   (cond
-    ((null? torrent)       (constantly #f))
-    ((not torrent)         (cute verify sort #f #t))
-    ((null? (cdr torrent)) (cute verify/single (car torrent)))
-    (else                  (cute verify sort torrent #f))))
+    ((null? torrent) #f)
+    ((not torrent) (verify sort #f #t))
+
+    ((null? (cdr torrent))
+     (and-let* ((torrent (get-torrents (car torrent))))
+       (verify/single torrent)))
+
+    (else (verify sort torrent #f))))
 
 (define (main args)
-  (let-values (((options help?) (process-arguments* args)))
+  (receive (options help?) (process-arguments* args)
     (let ((torrent (options-torrent options))
           (sort (sort/by (options-sort-by options)))
-          (daemon (options-daemon options))
+          (daemon? (options-daemon options))
           (logfile (options-logfile options)))
       (let ((action (verify/action torrent sort))
             (torrent (and torrent (get-torrents/hashes torrent))))
         (cond
           (help? (help*))
           ((null? torrent) #f) ; noop
-          (daemon
+
+          (daemon?
             (let ((pid (daemon action
+                               #:cwd #f ; Don't change CWD
+                               #:killothers? #t
                                #:stderr logfile
                                #:stdout logfile
-                               #:want-pid? #t
-                               #:killothers? #t)))
-              (unless pid
-                (error 'main "Failed to start daemon"))
-              (eprint "Daemon started with PID " pid)
+                               #:want-pid? #t)))
+              (unless pid (error 'main "Failed to start daemon"))
               (print pid)))
+
           (else (action)))))))
 
 (main (command-line-arguments))
