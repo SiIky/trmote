@@ -1,5 +1,3 @@
-;;; TODO:
-;;; - [ ] Add some way to exclude auto updates (maybe with labels)
 (import
   chicken.process-context
   chicken.string
@@ -27,16 +25,29 @@
        (loop)))))
 
 (defstruct options
-           high-priority-ratio
-           low-priority-ratio
+  high-priority-ratio
+  low-priority-ratio
+  skip-labels
 
-           every
-           every?
-           daemon
-           logfile
+  every
+  every?
+  daemon
+  logfile
 
-           rest
-           )
+  rest
+  )
+
+(define (=*> val funs)
+  (foldl (lambda (val fun) (fun val)) val funs))
+
+(define ((-*> funs) val)
+  (=*> val funs))
+
+(define (=> val . funs)
+  (=*> val funs))
+
+(define ((-> . funs) val)
+  (=*> val funs))
 
 (define *OPTS*
   (cling
@@ -56,6 +67,11 @@
                   (let ((ratio (string->number ratio)))
                     (assert (number? ratio))
                     (update-options ret #:low-priority-ratio ratio))))
+
+    (arg '((--skip-label) . label)
+         #:help "Don't change priority of torrents that have the given label."
+         #:kons (lambda (ret _ label)
+                  (update-options ret #:skip-labels (cons label (options-skip-labels ret)))))
 
 
     ; NOTE: The CSRF token is renewed every hour.
@@ -89,6 +105,7 @@
                                (make-options
                                  #:low-priority-ratio 4
                                  #:high-priority-ratio 2
+                                 #:skip-labels '()
                                  #:every (* 10 60)
                                  #:logfile #t
                                  )
@@ -112,7 +129,7 @@
                                  (group-pred? elem))))))
       (assert group-key)
       (let* ((group-key (caar group-key))
-             (group-elems (alist-ref group-key ret)))
+             (group-elems (reply-ref group-key ret)))
         (assert group-elems)
         (let ((group-elems (cons elem group-elems)))
           (alist-update group-key group-elems ret)))))
@@ -132,9 +149,9 @@
 
 (define ((transmission-update-seed-priority* priority) tors)
   (let ((hashes (list-ec (:list tor tors)
-                         (:let bandwidthPriority (alist-ref 'bandwidthPriority tor))
-                         (:let hashString (alist-ref 'hashString tor))
-                         (:let status (alist-ref 'status tor))
+                         (:let bandwidthPriority (reply-ref 'bandwidthPriority tor))
+                         (:let hashString (reply-ref 'hashString tor))
+                         (:let status (reply-ref 'status tor))
                          (not (= bandwidthPriority priority))
                          (if (or (= status status/seed-wait) (= status status/seed)))
                          hashString)))
@@ -147,28 +164,37 @@
 (define transmission-update-seed-priority/normal (transmission-update-seed-priority* priority/normal))
 (define transmission-update-seed-priority/high (transmission-update-seed-priority* priority/high))
 
-(define (update-priorities low high)
-  (with-transmission-result (torrent-get '("bandwidthPriority" "hashString" "status" "uploadRatio") #:ids #f)
+(define (update-priorities low high skip-labels)
+  (define !skip?
+    (-> (cute reply-ref 'labels <> eq? #())
+        vector->list
+        (cute lset-intersection string=? skip-labels <>)
+        null?))
+
+  (with-transmission-result (torrent-get '("bandwidthPriority" "hashString" "status" "uploadRatio" "labels") #:ids #f)
                             (lambda (arguments . _)
                               (alist-let/and arguments (torrents)
-                                             (alist-let/and (group-by `((high . ,(high-priority? high))
-                                                                        (normal . ,(normal-priority? low high))
-                                                                        (low . ,(low-priority? low)))
-                                                                      (vector->list torrents))
-                                                            (low normal high)
-                                                            (transmission-update-seed-priority/low low)
-                                                            (transmission-update-seed-priority/normal normal)
-                                                            (transmission-update-seed-priority/high high))))
+                                             (let ((torrents (=> torrents
+                                                                 vector->list
+                                                                 (cute filter !skip? <>)
+                                                                 (cute group-by `((high . ,(high-priority? high))
+                                                                                  (normal . ,(normal-priority? low high))
+                                                                                  (low . ,(low-priority? low)))
+                                                                       <>))))
+                                               (alist-let/and torrents (low normal high)
+                                                              (transmission-update-seed-priority/low low)
+                                                              (transmission-update-seed-priority/normal normal)
+                                                              (transmission-update-seed-priority/high high)))))
                             (lambda (result . _)
                               (eprint "Failed to get torrents: " result))))
 
-(define (update-priorities/every low high every)
+(define (update-priorities/every low high skip-labels every)
   (loop
-    (update-priorities low high)
+    (update-priorities low high skip-labels)
     (sleep every)))
 
-(define (update-priorities/daemon low high every logfile)
-  (daemon (cute update-priorities/every low high every)
+(define (update-priorities/daemon low high skip-labels every logfile)
+  (daemon (cute update-priorities/every low high skip-labels every)
           #:stderr logfile
           #:stdout logfile
           #:want-pid? #t
@@ -178,6 +204,7 @@
   (let-values (((options help?) (process-arguments* args)))
     (let ((low (options-low-priority-ratio options))
           (high (options-high-priority-ratio options))
+          (skip-labels (options-skip-labels options))
           (every (options-every options))
           (every? (options-every? options))
           (daemon? (options-daemon options))
@@ -187,13 +214,13 @@
 
         (every?
           (if daemon?
-              (let ((pid (update-priorities/daemon low high every logfile)))
-                (unless pid
-                  (error 'main "Failed to start daemon"))
-                (eprint "Daemon started with PID " pid)
-                (print pid))
-              (update-priorities/every low high every)))
+            (let ((pid (update-priorities/daemon low high skip-labels every logfile)))
+              (unless pid
+                (error 'main "Failed to start daemon"))
+              (eprint "Daemon started with PID " pid)
+              (print pid))
+            (update-priorities/every low high skip-labels every)))
 
-        (else (update-priorities low high))))))
+        (else (update-priorities low high skip-labels))))))
 
 (main (command-line-arguments))

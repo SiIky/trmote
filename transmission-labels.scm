@@ -109,17 +109,18 @@ EOF
       (torrent-set #:ids torrents #:labels labels))))
 
 (define (main args)
-  (let ((args (set-connection-options! args)))
-    (if (or (null? args)
+  (let-values (((args help?) (update-connection-options! args)))
+    (if (or help?
+            (null? args)
             (null? (cdr args)))
-        (help*)
-        (apply (alist-ref (car args)
-                          `(("add"    . ,add)
-                            ("get"    . ,get)
-                            ("remove" . ,remove)
-                            ("set"    . ,set))
-                          string=?
-                          help*)
-               (cdr args)))))
+      (help*)
+      (apply (alist-ref (car args)
+                        `(("add"    . ,add)
+                          ("get"    . ,get)
+                          ("remove" . ,remove)
+                          ("set"    . ,set))
+                        string=?
+                        help*)
+             (cdr args)))))
 
 (main (command-line-arguments))
