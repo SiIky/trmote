@@ -1,4 +1,5 @@
 (import
+  chicken.irregex
   chicken.port
   chicken.process-context
   chicken.sort
@@ -18,23 +19,22 @@
      (with-output-to-port (current-error-port) (lambda () (print arg ...))))))
 
 (defstruct options
-           host
-           port
-           authenv
-           username
-           password
+  host
+  port
+  authenv
+  username
+  password
 
-           download-dirs
-           help
-           ratio<=
-           ratio>=
-           rest
-           statuses
-           )
+  download-dirs
+  help
+  ratio<=
+  ratio>=
+  statuses
+  )
 
 (define *OPTS*
   (cling
-    (lambda (ret _ rest) (update-options ret #:rest rest))
+    (lambda (ret . _) ret)
 
     (arg '((-h --help))
          #:help "Show this help text"
@@ -43,22 +43,22 @@
 
 
     (arg '((--host) . host)
-         #:help "The host of the transmission instance"
+         #:help "The host of the Transmission instance"
          #:kons (lambda (ret _ host)
                   (update-options ret #:host host)))
 
     (arg '((--port) . port)
-         #:help "The port of the transmission instance"
+         #:help "The port of the Transmission instance"
          #:kons (lambda (ret _ port)
                   (update-options ret #:port port)))
 
     (arg '((--username) . username)
-         #:help "The username to access the transmission instance"
+         #:help "The username to access the Transmission instance"
          #:kons (lambda (ret _ username)
                   (update-options ret #:username username)))
 
     (arg '((--password) . password)
-         #:help "The password to access the transmission instance"
+         #:help "The password to access the Transmission instance"
          #:kons (lambda (ret _ password)
                   (update-options ret #:password password)))
 
@@ -68,10 +68,10 @@
                   (update-options ret #:authenv #t)))
 
 
-    (arg '((--download-dir) . download-dir)
-         #:help "What directories to filter for"
-         #:kons (lambda (ret _ download-dir)
-                  (update-options ret #:download-dirs (lset-adjoin string=? (options-download-dirs ret) download-dir))))
+    (arg '((--download-dir) . regex)
+         #:help "Regex of the directories to filter for; may be given more than once to include more directories"
+         #:kons (lambda (ret _ regex)
+                  (update-options ret #:download-dirs (lset-adjoin string=? (options-download-dirs ret) regex))))
 
     (arg '((--ratio-ge) . ratio)
          #:help "Filter for torrents with a ratio >= than the given argument"
@@ -88,6 +88,22 @@
          #:kons (lambda (ret _ status)
                   (update-options ret #:statuses (lset-adjoin string=? (options-statuses ret) status))))
     ))
+
+(define (*=> vals . funs)
+  (foldl (lambda (val fun) (fun val))
+         (apply (car funs) vals)
+         (cdr funs)))
+
+(define ((*-> . funs) . vals)
+  (foldl (lambda (val fun) (fun val))
+         (apply (car funs) vals)
+         (cdr funs)))
+
+(define (=> val . funs)
+  (foldl (lambda (val fun) (fun val)) val funs))
+
+(define ((-> . funs) val)
+  (foldl (lambda (val fun) (fun val)) val funs))
 
 (define (set-parameters! options)
   (let ((host (options-host options))
@@ -117,8 +133,8 @@
        (unless (and username password)
          (eprint "Did you forget to set both username and password? Authentication may fail."))
        (when username (*username* username))
-       (when password (*password* password))))
-    #t))
+       (when password (*password* password)))))
+  #t)
 
 (define (status-string->status-constant str)
   (alist-ref
@@ -151,66 +167,80 @@
                      #:help #f
                      #:ratio<= #f
                      #:ratio>= #f
-                     #:rest #f
                      #:statuses '()
                      )
                    args))
         (true (constantly #t)))
 
-    (let ((want-dir?
-            (let ((wanted-dirs (options-download-dirs options)))
-              (if (null? wanted-dirs)
-                  true
-                  (cute member <> wanted-dirs))))
+    (define want-dir?
+      (let ((wanted-dirs (=> options
+                             options-download-dirs
+                             (cute map string->irregex <>))))
+        (if (null? wanted-dirs)
+            true
+            (lambda (download-dir)
+              (any (cute irregex-match? <> download-dir) wanted-dirs)))))
 
-          (ratio>=?
-            (let ((ratio>= (options-ratio>= options)))
-              (if ratio>=
-                  (cute >= <> ratio>=)
-                  true)))
+    (define ratio>=?
+      (let ((ratio>= (options-ratio>= options)))
+        (if ratio>=
+            (cute >= <> ratio>=)
+            true)))
 
-          (ratio<=?
-            (let ((ratio<= (options-ratio<= options)))
-              (if ratio<=
-                  (cute <= <> ratio<=)
-                  true)))
+    (define ratio<=?
+      (let ((ratio<= (options-ratio<= options)))
+        (if ratio<=
+            (cute <= <> ratio<=)
+            true)))
 
-          (want-status?
-            (let* ((wanted-statuses (options-statuses options))
-                   (original-len (length wanted-statuses))
-                   (wanted-statuses (filter identity (map status-string->status-constant wanted-statuses)))
-                   (final-len (length wanted-statuses)))
-              (unless (= original-len final-len)
-                (eprint "Some status strings weren't valid and couldn't be converted, so they've been ignored. Using these statuses: " wanted-statuses))
+    (define want-status?
+      (let* ((wanted-statuses (options-statuses options))
+             (original-len (length wanted-statuses))
+             (wanted-statuses (=> wanted-statuses
+                                  (cute map status-string->status-constant <>)
+                                  (cute filter identity <>)))
+             (final-len (length wanted-statuses)))
+        (unless (= original-len final-len)
+          (eprint "Some status strings weren't valid and couldn't be converted, so they've been ignored. Using these statuses: " wanted-statuses))
 
-              (if (null? wanted-statuses)
-                  true
-                  (o not not (cute member <> wanted-statuses))))))
+        (if (null? wanted-statuses)
+            true
+            (o not not (cute member <> wanted-statuses)))))
 
-      (if (options-help options)
-          (help *OPTS*)
-          (begin
-            (set-parameters! options)
-            (with-transmission-result (torrent-get '("hashString" "downloadDir" "status" "name" "uploadRatio") #:ids #f)
-                                      (lambda (arguments . _)
-                                        (alist-let/and arguments (torrents)
-                                                       (assert torrents)
-                                                       (let ((tors (list-ec (:vector tor torrents)
-                                                                            (:let ratio (reply-ref 'uploadRatio tor))
-                                                                            (:let download-dir (reply-ref 'downloadDir tor))
-                                                                            (:let status (reply-ref 'status tor))
+    (define (assert-torrents arguments . _)
+      (alist-let/and arguments (torrents)
+                     (assert torrents)
+                     torrents))
 
-                                                                            (and (ratio<=? ratio)
-                                                                                 (ratio>=? ratio)
-                                                                                 (want-status? status)
-                                                                                 (want-dir? download-dir))
+    (define (filter-torrents torrents)
+      (list-ec (:vector tor torrents)
+               (:let ratio (reply-ref 'uploadRatio tor))
+               (:let download-dir (reply-ref 'downloadDir tor))
+               (:let status (reply-ref 'status tor))
+               (and (ratio<=? ratio)
+                    (ratio>=? ratio)
+                    (want-status? status)
+                    (want-dir? download-dir))
+               (alist-keep-keys tor 'hashString 'name 'uploadRatio 'status)))
 
-                                                                            (alist-keep-keys tor 'hashString 'name 'uploadRatio 'status))))
-                                                         (for-each (lambda (torrent)
-                                                                     (alist-let/and torrent ((hash-string hashString) name (upload-ratio uploadRatio) status)
-                                                                                    (print hash-string #\tab (status-constant->status-string status) #\tab upload-ratio #\tab name)))
-                                                                   (sort tors (lambda (tor1 tor2)
-                                                                                (>= (reply-ref 'uploadRatio tor1)
-                                                                                    (reply-ref 'uploadRatio tor2))))))))))))))
+    (define (sort-torrents torrents)
+      (sort torrents (lambda (tor1 tor2)
+                       (>= (reply-ref 'uploadRatio tor1)
+                           (reply-ref 'uploadRatio tor2)))))
+
+    (define (show-torrents torrents)
+      (do-ec (:list torrent torrents)
+             (alist-let/and torrent ((hash-string hashString) name (upload-ratio uploadRatio) status)
+                            (print hash-string #\tab (status-constant->status-string status) #\tab upload-ratio #\tab name))))
+
+    (if (options-help options)
+        (help *OPTS*)
+        (begin
+          (set-parameters! options)
+          (with-transmission-result (torrent-get '("hashString" "downloadDir" "status" "name" "uploadRatio") #:ids #f)
+                                    (*-> assert-torrents
+                                         filter-torrents
+                                         sort-torrents
+                                         show-torrents))))))
 
 (main (command-line-arguments))
