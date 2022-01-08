@@ -163,8 +163,7 @@
 
 (define (process-arguments* args)
   (define sort-by
-    '(
-      ; NOTE: `status`, `priority`, `latest-activity`, and `ratio` basically
+    '(; NOTE: `status`, `priority`, `latest-activity`, and `ratio` basically
       ;       all give order based on a torrent's priority, while
       ;       `progress*total-size` gives order based on how quickly a torrent
       ;       can be verified, i.e., smaller torrents can be verified in less
