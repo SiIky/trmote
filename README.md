@@ -1,7 +1,7 @@
 # trmote
 
 Useful programs built on top of
-[transmission.scm](https://github.com/siiky/transmission.scm) to
+[transmission.scm](https://git.sr.ht/~siiky/transmission.scm) to
 interact with/control a Transmission daemon.
 
 ## `transmission-filter`
